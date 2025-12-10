@@ -18,7 +18,7 @@ The API token will automatically provide the company context and user permission
 ## 1. Create Transaction
 
 ### Create Payment Transaction
-Create a new payment transaction and receive a redirect URL to direct the customer to for payment processing.
+Create a new payment transaction (one-time or subscription) and receive a redirect URL to direct the customer to for payment processing.
 
 **Endpoint:** `POST /create-transaction`
 
@@ -28,13 +28,32 @@ Authorization: Bearer YOUR_API_TOKEN
 Content-Type: application/json
 ```
 
-**Request Body:**
+**Request Body (One-time Payment):**
 ```json
 {
   "external_reference": "TXN-2024-001",
   "site_url": "https://example.com",
   "email": "customer@example.com",
   "amount": 100.50,
+  "currency": "USD",
+  "success_url": "https://example.com/payment/success",
+  "fail_url": "https://example.com/payment/failed",
+  "notify_url": "https://example.com/webhooks/payment",
+  "name": "John Doe",
+  "telephone_number": "+1234567890",
+  "identification_number": "ID123456789",
+  "address": "123 Main St, New York, NY 10001"
+}
+```
+
+**Request Body (Subscription Payment):**
+```json
+{
+  "external_reference": "SUB-2024-001",
+  "site_url": "https://example.com",
+  "email": "customer@example.com",
+  "amount": 29.99,
+  "cycles": 3,
   "currency": "USD",
   "success_url": "https://example.com/payment/success",
   "fail_url": "https://example.com/payment/failed",
@@ -55,6 +74,9 @@ Content-Type: application/json
 - `success_url`: URL to redirect the user to when the transaction completes successfully (required)
 - `fail_url`: URL to redirect the user to when the transaction fails (required)
 - `notify_url`: URL to send the webhook POST request to when the transaction is successfully completed (required)
+
+**Optional Fields (for Subscriptions):**
+- `cycles`: Subscription billing cycle (optional, defaults to 0 for one-time payment)
 
 **Optional Fields (for smoother KYC journey):**
 - `name`: Full name of the customer (optional, but recommended for smoother KYC process)
@@ -83,6 +105,24 @@ Content-Type: application/json
 - The payment amount to collect from the customer
 - Should be a positive number
 - Amount is in the currency specified by the `currency` field (defaults to USD)
+- For subscriptions, this is the amount charged per billing cycle
+
+**cycles (optional):**
+- Subscription billing cycle frequency
+- Determines how often the customer will be charged the specified `amount`
+- If not provided or set to `0`, the transaction is a one-time payment
+- Valid values:
+  - `0` - **Instant one-time charge**: Single payment, no recurring charges (default)
+  - `1` - **Daily charge**: Customer is charged every day at the same time
+  - `2` - **Weekly charge**: Customer is charged once per week (every 7 days)
+  - `3` - **Monthly charge**: Customer is charged once per month (every 30 days)
+  - `4` - **Quarterly charge**: Customer is charged every 3 months (every 90 days)
+  - `5` - **Half-yearly charge**: Customer is charged every 6 months (every 180 days)
+  - `6` - **Annual charge**: Customer is charged once per year (every 365 days)
+- When a subscription is created, the first charge occurs immediately upon successful payment
+- Subsequent charges will be automatically processed at the specified interval
+- Each recurring charge will trigger a webhook notification to your `notify_url`
+- The `external_reference` will be included in all webhook notifications for subscription charges to help you track recurring payments
 
 **currency:**
 - The currency code for the transaction (e.g., "USD", "CAD", "EUR")
@@ -162,7 +202,7 @@ POST {notify_url}
 Content-Type: application/json
 ```
 
-**Webhook Payload:**
+**Webhook Payload (One-time Payment):**
 ```json
 {
   "transaction_id": "transaction-uuid-1234",
@@ -173,9 +213,36 @@ Content-Type: application/json
   "email": "customer@example.com",
   "completed_at": "2024-01-01T10:30:00Z",
   "payment_method": "card",
-  "site_url": "https://example.com"
+  "site_url": "https://example.com",
+  "cycles": 0
 }
 ```
+
+**Webhook Payload (Subscription Payment):**
+```json
+{
+  "transaction_id": "transaction-uuid-1234",
+  "external_reference": "SUB-2024-001",
+  "status": "completed",
+  "amount": 29.99,
+  "currency": "USD",
+  "email": "customer@example.com",
+  "completed_at": "2024-01-01T10:30:00Z",
+  "payment_method": "card",
+  "site_url": "https://example.com",
+  "cycles": 3,
+  "subscription_id": "sub-uuid-1234",
+  "charge_number": 1,
+  "next_charge_date": "2024-02-01T10:30:00Z"
+}
+```
+
+**Subscription Webhook Notes:**
+- For subscription payments, each recurring charge will trigger a separate webhook notification
+- The `charge_number` field indicates which charge in the subscription cycle this is (1 for initial, 2 for first renewal, etc.)
+- The `next_charge_date` field indicates when the next automatic charge will occur
+- The `subscription_id` field allows you to track all charges related to the same subscription
+- Use the `external_reference` to correlate subscription charges with your internal records
 
 **Webhook Response:**
 Your webhook endpoint should return a `200 OK` status code to acknowledge receipt of the notification. If ThirdPay does not receive a successful response, it may retry the webhook delivery.
@@ -186,6 +253,8 @@ Your webhook endpoint should return a `200 OK` status code to acknowledge receip
 - Implement idempotency checks to handle duplicate webhook deliveries
 - Process webhooks asynchronously to avoid timeout issues
 - Log all webhook requests for debugging and audit purposes
+- For subscriptions, you will receive a webhook for each recurring charge
+- Handle subscription webhooks to update your system with recurring payment status
 
 ---
 
@@ -228,6 +297,13 @@ Your webhook endpoint should return a `200 OK` status code to acknowledge receip
 }
 ```
 
+**400 Bad Request - Invalid Cycles Value:**
+```json
+{
+  "error": "Invalid cycles value. Must be between 0 and 6"
+}
+```
+
 **401 Unauthorized:**
 ```json
 {
@@ -263,6 +339,14 @@ Your webhook endpoint should return a `200 OK` status code to acknowledge receip
 - **Currency Support**: USD (default), CAD, and other supported currencies
 - **External Reference**: Maximum 255 characters
 - **URL Length**: All URL fields must be valid and accessible
+- **Cycles**: Must be an integer between 0 and 6 (inclusive)
+  - `0` = One-time payment
+  - `1` = Daily subscription
+  - `2` = Weekly subscription
+  - `3` = Monthly subscription
+  - `4` = Quarterly subscription
+  - `5` = Half-yearly subscription
+  - `6` = Annual subscription
 
 ### Processing Times
 - **Transaction Creation**: Immediate via API
@@ -276,13 +360,25 @@ Your webhook endpoint should return a `200 OK` status code to acknowledge receip
 
 ### Recommended Integration Flow
 
-1. **Create Transaction**: Call `POST /create-transaction` with required fields
+**For One-time Payments:**
+1. **Create Transaction**: Call `POST /create-transaction` with required fields (omit `cycles` or set to `0`)
 2. **Receive Redirect URL**: Extract `redirect_url` from the response
 3. **Redirect Customer**: Direct the customer to the `redirect_url` for payment
 4. **Customer Completes Payment**: Customer completes payment on ThirdPay platform
 5. **Receive Webhook**: Your `notify_url` receives POST request with transaction details
 6. **Update Your System**: Process the webhook and update your internal records
 7. **Customer Redirected**: Customer is redirected to `success_url` or `fail_url` based on outcome
+
+**For Subscription Payments:**
+1. **Create Subscription**: Call `POST /create-transaction` with required fields and `cycles` value (1-6)
+2. **Receive Redirect URL**: Extract `redirect_url` from the response
+3. **Redirect Customer**: Direct the customer to the `redirect_url` for payment
+4. **Customer Completes Payment**: Customer completes initial payment on ThirdPay platform
+5. **Receive Initial Webhook**: Your `notify_url` receives POST request for the first charge
+6. **Update Your System**: Process the webhook, create subscription record, and activate customer access
+7. **Customer Redirected**: Customer is redirected to `success_url` or `fail_url` based on outcome
+8. **Handle Recurring Charges**: Receive webhook notifications for each subsequent billing cycle
+9. **Monitor Subscriptions**: Track subscription status and handle failed recurring payments
 
 ### Best Practices
 
@@ -292,6 +388,12 @@ Your webhook endpoint should return a `200 OK` status code to acknowledge receip
 - **Test Webhook Endpoints**: Ensure your webhook endpoint is accessible and returns proper responses
 - **Monitor Transaction Status**: Use the `transaction_id` to check transaction status if needed
 - **Error Handling**: Implement proper error handling for failed transactions and webhook delivery failures
+- **Subscription Management**: 
+  - Store `subscription_id` from webhook responses to track recurring payments
+  - Use `charge_number` to identify which billing cycle each webhook represents
+  - Monitor `next_charge_date` to anticipate upcoming charges
+  - Implement logic to handle failed recurring payments and subscription cancellations
+  - Keep subscription status synchronized with your internal records
 
 ---
 
